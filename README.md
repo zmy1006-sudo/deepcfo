@@ -12,7 +12,7 @@
 
 > 说明：当前为演示系统，OCR 与企业查询使用本地模拟数据，方便快速验证产品流程。
 
-## 快速启动
+## 本地快速启动
 ```bash
 python3 demo_server.py
 ```
@@ -21,6 +21,16 @@ python3 demo_server.py
 
 - http://localhost:8000/index.html
 
+## Vercel 部署（修复 404）
+仓库已包含 `vercel.json`，用于把所有路径重写到 `index.html`，避免出现 `404: NOT_FOUND`。
+
+部署步骤：
+1. 将仓库导入 Vercel（Framework Preset 选 `Other` 或保持自动识别）。
+2. Build Command 留空（静态页面无需构建）。
+3. Output Directory 留空（直接使用仓库根目录）。
+4. 重新部署后访问根路径或任意子路径都会命中 `index.html`。
+
 ## 文件结构
 - `index.html`：Demo 主界面与全部业务逻辑（前端内置）
 - `demo_server.py`：本地静态服务启动脚本
+- `vercel.json`：Vercel 路由重写与静态站点配置
