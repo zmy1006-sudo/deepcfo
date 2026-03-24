@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DeepCFO Demo V1.3</title>
+  <style>
+    :root { --bg:#f7f8fa; --card:#fff; --line:#e5e7eb; --brand:#2563eb; --ok:#16a34a; --warn:#d97706; --danger:#dc2626; }
+    * { box-sizing: border-box; font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif; }
+    body { margin:0; background:var(--bg); color:#111827; }
+    header { background:#111827; color:#fff; padding:16px 24px; position: sticky; top:0; z-index:2; }
+    header h1 { margin:0; font-size:18px; }
+    main { max-width:1200px; margin:20px auto; padding:0 16px 36px; display:grid; gap:16px; }
+    .grid { display:grid; gap:16px; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; }
+    h2 { margin:0 0 10px; font-size:16px; }
+    p, li { font-size:13px; line-height:1.5; }
+    label { display:block; font-size:12px; color:#374151; margin:8px 0 4px; }
+    input, select, textarea, button { width:100%; border:1px solid #d1d5db; border-radius:8px; padding:8px 10px; font-size:13px; }
+    textarea { min-height:76px; resize:vertical; }
+    button { cursor:pointer; border:none; background:var(--brand); color:white; font-weight:600; }
+    button.secondary { background:#374151; }
+    .row { display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
+    .pill { display:inline-block; margin:2px 4px 2px 0; padding:2px 8px; border-radius:999px; font-size:12px; }
+    .ok{background:#dcfce7;color:#166534;} .warn{background:#fef3c7;color:#92400e;} .danger{background:#fee2e2;color:#991b1b;} .info{background:#dbeafe;color:#1e3a8a;}
+    .log { background:#0b1020; color:#d1d5db; border-radius:8px; padding:10px; min-height:160px; max-height:260px; overflow:auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }
+    table { width:100%; border-collapse: collapse; font-size:12px; }
+    th, td { border-bottom:1px solid var(--line); text-align:left; padding:6px; }
+    .small{font-size:12px;color:#6b7280;}
+  </style>
+</head>
+<body>
+<header>
+  <h1>DeepCFO Demo V1.3（冷启动 + 对话记账 + 发票OCR自动关联）</h1>
+</header>
+<main>
+  <div class="grid">
+    <section class="card">
+      <h2>1) 冷启动：统一社会信用代码自动填充</h2>
+      <div class="row">
+        <div>
+          <label>统一社会信用代码（18位）</label>
+          <input id="uscc" placeholder="9131XXXXXXXXXXXXXX" maxlength="18" />
+        </div>
+        <div>
+          <label>企业类型</label>
+          <select id="taxPayerType">
+            <option>小规模纳税人</option>
+            <option>一般纳税人</option>
+          </select>
+        </div>
+      </div>
+      <button id="fillBtn">自动填充企业信息</button>
+      <div id="enterpriseInfo" class="small" style="margin-top:10px;"></div>
+    </section>
+
+    <section class="card">
+      <h2>2) 数据初始化</h2>
+      <label>初始化方式</label>
+      <select id="initMode">
+        <option value="legacy">A. 从旧系统导入</option>
+        <option value="bank">B. 从银行流水导入</option>
+        <option value="zero">C. 从零开始</option>
+      </select>
+      <button id="initBtn">执行初始化</button>
+      <div id="initResult" class="small" style="margin-top:10px;"></div>
+    </section>
+  </div>
+
+  <div class="grid">
+    <section class="card">
+      <h2>3) AI对话记账（含“那笔”指代）</h2>
+      <label>输入</label>
+      <textarea id="chatInput" placeholder="例：收了王总公司3万设计费 / 那笔有发票吗？"></textarea>
+      <div class="row">
+        <button id="chatBtn">发送</button>
+        <button id="clearSessionBtn" class="secondary">新建会话</button>
+      </div>
+      <p class="small">上下文对象：sessionId / enterpriseId / recentTransactions(5) / currentTaxPeriod / currentFocus / userProfile</p>
+      <div id="chatOutput" class="log"></div>
+    </section>
+
+    <section class="card">
+      <h2>4) 发票OCR（5步）+ 7项自动关联</h2>
+      <label>上传发票图片（Demo中仅取文件名模拟OCR）</label>
+      <input id="invoiceFile" type="file" accept="image/*,.pdf" />
+      <button id="ocrBtn">执行OCR并生成凭证草稿</button>
+      <div id="ocrOutput" class="log" style="margin-top:8px;"></div>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>5) 凭证台账（状态机：草稿 → 待确认 → 已入账 → 已申报 → 已归档）</h2>
+    <table>
+      <thead><tr><th>凭证号</th><th>摘要</th><th>金额</th><th>类型</th><th>发票状态</th><th>凭证状态</th></tr></thead>
+      <tbody id="voucherTable"></tbody>
+    </table>
+  </section>
+</main>
+
+<script>
+const state = {
+  sessionId: crypto.randomUUID(),
+  enterpriseId: null,
+  enterprise: null,
+  currentTaxPeriod: '2026-Q1',
+  currentFocus: 'cold-start',
+  userProfile: { role: '老板' },
+  recentTransactions: [],
+  vouchers: []
+};
+
+function log(el, msg){ el.innerHTML += `${new Date().toLocaleTimeString()} | ${msg}<br/>`; el.scrollTop = el.scrollHeight; }
+function fakeEnterpriseByUSCC(uscc, taxPayerType){
+  const city = uscc.startsWith('91') ? '上海市浦东新区' : '杭州市西湖区';
+  return {
+    enterpriseId: `ent-${uscc.slice(-6) || 'demo'}`,
+    name: `深度示例科技（${uscc.slice(-4) || 'DEMO'}）有限公司`,
+    legalRep: '王一休',
+    registeredCapital: '100万人民币',
+    establishDate: '2023-09-15',
+    address: city,
+    scope: '软件开发、企业管理咨询、技术服务',
+    taxPayerType,
+    estimatedVatRate: taxPayerType === '一般纳税人' ? '6%' : '1%（优惠）',
+    policy: city.includes('上海') ? '临港及小微叠加政策（演示）' : '浙江小微阶段性政策（演示）'
+  };
+}
+
+function pushVoucher(v){
+  state.vouchers.unshift(v);
+  state.recentTransactions.unshift(v);
+  state.recentTransactions = state.recentTransactions.slice(0,5);
+  renderVouchers();
+}
+
+function renderVouchers(){
+  const tbody = document.getElementById('voucherTable');
+  tbody.innerHTML = state.vouchers.map(v => `<tr>
+      <td>${v.id}</td><td>${v.summary}</td><td>${v.amount.toFixed(2)}</td><td>${v.type}</td>
+      <td>${v.invoiceStatus}</td><td>${v.status}</td>
+    </tr>`).join('');
+}
+
+document.getElementById('fillBtn').onclick = () => {
+  const uscc = document.getElementById('uscc').value.trim();
+  const taxPayerType = document.getElementById('taxPayerType').value;
+  if(!/^\w{18}$/.test(uscc)) return alert('请输入18位统一社会信用代码（Demo支持字母数字）');
+  const info = fakeEnterpriseByUSCC(uscc, taxPayerType);
+  state.enterprise = info; state.enterpriseId = info.enterpriseId; state.currentFocus = 'daily-bookkeeping';
+  document.getElementById('enterpriseInfo').innerHTML = `
+    <span class='pill info'>企业：${info.name}</span>
+    <span class='pill info'>法人：${info.legalRep}</span>
+    <span class='pill info'>地址：${info.address}</span>
+    <span class='pill ok'>税率建议：${info.estimatedVatRate}</span>
+    <span class='pill warn'>政策加载：${info.policy}</span>`;
+};
+
+document.getElementById('initBtn').onclick = () => {
+  const mode = document.getElementById('initMode').value;
+  const preset = { legacy:[136,128,8], bank:[482,463,19], zero:[0,0,0] }[mode];
+  const [tx, drafts, needConfirm] = preset;
+  document.getElementById('initResult').innerHTML = `初始化完成：识别交易 ${tx} 笔，生成凭证草稿 ${drafts} 份，待确认 ${needConfirm} 笔。`;
+};
+
+const chatOutput = document.getElementById('chatOutput');
+function addChat(role,text){ log(chatOutput, `<b>${role}:</b> ${text}`); }
+
+document.getElementById('chatBtn').onclick = () => {
+  const text = document.getElementById('chatInput').value.trim();
+  if(!text) return;
+  addChat('用户', text);
+  if(text.includes('收了') && text.includes('万')){
+    const amount = Number((text.match(/(\d+(?:\.\d+)?)万/)||[])[1]||0)*10000;
+    const target = (text.match(/收了(.+?)(\d|万)/)||[])[1]?.trim() || '客户';
+    const voucher = { id:`凭-${String(state.vouchers.length+1).padStart(3,'0')}`, summary:`收款：${target}`, amount, type:'收入', invoiceStatus:'待补票', status:'待确认' };
+    pushVoucher(voucher);
+    addChat('DeepCFO', `已生成凭证 ${voucher.id}，金额 ¥${amount.toFixed(2)}，当前发票状态：待补票。`);
+  } else if(text.includes('那笔') && text.includes('发票')){
+    const t = state.recentTransactions[0];
+    if(!t) addChat('DeepCFO', '当前会话还没有可指代的“那笔”交易。');
+    else addChat('DeepCFO', `${t.id}（${t.summary}）发票状态：${t.invoiceStatus}。是否现在上传发票？`);
+  } else if(text.includes('那笔') && (text.includes('申报')||text.includes('报税'))){
+    const t = state.recentTransactions[0];
+    if(!t) addChat('DeepCFO', '暂无可查询交易。');
+    else addChat('DeepCFO', `${t.id} 属于 ${state.currentTaxPeriod} 申报范围，截止日 2026-03-31。`);
+  } else {
+    addChat('DeepCFO', '我已理解你的意图（Demo模式），可继续补充金额、对方名称、是否有发票。');
+  }
+};
+
+document.getElementById('clearSessionBtn').onclick = () => {
+  state.sessionId = crypto.randomUUID(); state.recentTransactions = []; chatOutput.innerHTML='';
+  addChat('系统', `新会话已创建：${state.sessionId.slice(0,8)}...`);
+};
+
+const ocrOutput = document.getElementById('ocrOutput');
+document.getElementById('ocrBtn').onclick = () => {
+  const file = document.getElementById('invoiceFile').files[0];
+  if(!file) return alert('请先选择发票文件');
+  const confidence = (92 + Math.random()*7).toFixed(1);
+  const parsed = {
+    type: file.name.includes('专') ? '增值税专用发票' : '增值税普通发票',
+    code: 'NO' + String(Math.floor(Math.random()*1e8)).padStart(8,'0'),
+    date: '2026-03-24',
+    buyer: state.enterprise?.name || '未初始化企业',
+    amountWithoutTax: 8800,
+    taxRate: state.enterprise?.taxPayerType === '一般纳税人' ? '6%' : '1%',
+    tax: 528,
+    total: 9328
+  };
+
+  log(ocrOutput, 'Step1 上传成功（微信压缩策略：启用）');
+  log(ocrOutput, 'Step2 OCR识别完成（模拟阿里云票据OCR）');
+  log(ocrOutput, `Step3 结构化提取：票号=${parsed.code}，价税合计=¥${parsed.total}`);
+  log(ocrOutput, `Step4 AI处理：类型=费用，推荐科目=管理费用，置信度=${confidence}%`);
+  log(ocrOutput, 'Step5 用户确认前预览已生成');
+
+  const t = state.recentTransactions[0];
+  if(t){ t.invoiceStatus = '已归档'; }
+  const voucher = { id:`OCR-${String(state.vouchers.length+1).padStart(3,'0')}`, summary:`OCR识别-${parsed.type}`, amount:parsed.total, type:'费用', invoiceStatus:'已归档', status:'草稿' };
+  pushVoucher(voucher);
+
+  const ops = [
+    '① 已自动关联当前会话与摘要',
+    '② 已执行发票号码查重（未发现重复）',
+    '③ 已按销售方名称匹配合同（Demo未命中）',
+    `④ 已判断抵扣资格：${state.enterprise?.taxPayerType === '一般纳税人' && parsed.type.includes('专用') ? '可抵扣' : '不可抵扣/计入成本'}`,
+    '⑤ 已生成凭证草稿并标记有票',
+    '⑥ 已归集进项税额台账（一般纳税人）',
+    '⑦ 已执行缺失信息预警（税号一致性/大额无合同）'
+  ];
+  ops.forEach(x => log(ocrOutput, x));
+  if(Number(confidence) < 90) log(ocrOutput, '⚠️ 低置信字段已标红，请人工复核金额与税号');
+  renderVouchers();
+};
+
+addChat('系统', `会话已启动：${state.sessionId.slice(0,8)}...`);
+renderVouchers();
+</script>
+</body>
+</html>
